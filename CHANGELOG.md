@@ -1,9 +1,41 @@
 # Changelog
 
+## 3.1.0 - 2026-11-03
+
+### Added
+
+- Determinant scan profiles: human-editable `rules/scan_profiles.yaml` selects
+  staged/whole-tree mode, include/exclude paths, rule sources, rule-id globs,
+  and severities. CLI flags (`--profile`, `--profiles-file`, `--include`,
+  `--exclude`, `--rule`, `--skip-rule`, `--rule-source`, `--rule-severity`,
+  `--staged`, `--list-profiles`) and the GUI Scan tab use the same selections,
+  with profile/path/rule metadata recorded in Markdown and JSON reports.
+- GUI **Profiles** tab with an in-app rendered guide, and a Determinant
+  selection card with explicit override inputs.
+- `docs/SCAN_PROFILES.md`, packaged as the `commit_guard_docs` module for PyPI
+  and bundled into the zipapp so the guide and profiles work in installed
+  copies.
+- VS Code extension 0.1.1 with workspace-aware language-server startup,
+  debounced document synchronization, clearer recovery, and expanded language
+  activation.
+
 ## Unreleased
 
 ### Added
 
+- Phase 2 completion: cross-file Python taint summaries for helper sinks and
+  source-returning wrappers, with repository discovery capped by size.
+- HMAC-SHA256 signed offline OSV snapshots (`.sig` sidecars),
+  `--sca-require-signature`, and `scripts/sign_osv_snapshot.py`.
+- GitLab merge-request summaries and inline fix suggestions, plus
+  `--platform auto|github|gitlab` for `--create-pr`/`--review-pr`.
+- VS Code extension skeleton under `editors/vscode/` that starts `commit-guard lsp`.
+- Single-file zipapp builder (`scripts/build_zipapp.py`) with runtime rule
+  extraction, and a release workflow that builds wheel, sdist, zipapp, SBOMs,
+  checksums, signatures, provenance, and a container image.
+- Fixed-commit accuracy benchmark (`benchmarks/accuracy_benchmark.py`) covering
+  seven stable CWE cases, wired into CI with a strict self-scan dogfood step.
+- GitLab and benchmark-card documentation, plus upgrade end-to-end tests.
 - Phase 2/3 ecosystem surfaces: `sbom`, `license`, `dashboard`, `watch`,
   `lsp`, `compliance`, and `plugin` CLI commands.
 - Offline CycloneDX 1.6 and SPDX 2.3 SBOM generation with purls, manifests,
@@ -102,6 +134,7 @@
 
 ### Changed
 
+- Package version moved to `3.0.0`; SARIF output remains schema `2.1.0`.
 - Rebuilt the README around the fast, offline-first Local Security Control
   Plane workflow: pipx quickstart, feature matrix, policy/analyzer model,
   architecture diagram, privacy model, and maintainer credits.

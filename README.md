@@ -84,9 +84,8 @@ hook, and preserves your existing configuration and ignore files.
 
 ### Release status
 
-CommitGuard is on the **3.0 preview** line while the package version remains
-`2.1.0`. GitHub source installs work today; the first PyPI publication is
-pending. Pin a release tag or commit SHA for production use.
+CommitGuard is on the **3.0** line. GitHub source installs work today; pin a
+release tag or commit SHA for production use.
 
 ## Install Options
 
@@ -113,12 +112,12 @@ automatically). Linux, macOS, Windows, Git worktrees, and custom
 | Staged commit gate | Scans only added lines with stable exit codes and a policy decision. | Yes |
 | Secret detection | 220+ gitleaks-style rules with entropy, keywords, path filters, and allowlists. Values are redacted by default. | Yes |
 | SAST | 280+ curated native and MIT-licensed DevSkim rules for Python, JS/TS, Go, Java, PHP, Ruby, Rust, C/C++, shell, frameworks, web, CI, Kubernetes, Terraform, and Docker. | Yes |
-| Python + JS/TS taint | Standard-library AST checks for request/input flows into SQL, shell, code-exec, SSRF, path, and XSS sinks. | Yes |
-| Dependencies | Pinned-dependency checks against an offline OSV snapshot, with opt-in OSV.dev lookup. | Yes / opt-in |
+| Python + JS/TS taint | Standard-library AST checks for request/input flows into SQL, shell, code-exec, SSRF, path, and XSS sinks, with cross-file helper summaries for Python. | Yes |
+| Dependencies | Pinned-dependency checks against an offline OSV snapshot with optional HMAC-signed sidecars, plus opt-in OSV.dev lookup. | Yes / opt-in |
 | Analyzer interop | Normalize and merge SARIF or native output from Semgrep, CodeQL, Trivy, Grype, Checkov, Bandit, and gitleaks. | Yes |
 | SBOM and licenses | CycloneDX 1.6, SPDX 2.3, and an allow/deny/review license policy with separate exit status. | Yes |
 | Compliance | Control mapping packs for OWASP Top 10, CWE Top 25, ASVS 5.0, PCI DSS 4.0, and SOC 2 technical evidence, with explicit caveats. | Yes |
-| Editor and watch loops | Stdio LSP diagnostics/code actions and `watch --once` incremental snapshots for local loops. | Yes |
+| Editor and watch loops | Stdio LSP diagnostics/code actions, a VS Code extension skeleton, and `watch --once` incremental snapshots. | Yes |
 | Dashboard | Self-contained HTML/JSON with severity, category, owner, trend, and report provenance. | Yes |
 | Plugins | Signed manifests, out-of-process execution, capability limits, timeouts, and output caps. | Yes |
 | Policy engine | `strict`, `balanced`, and `audit` profiles; thresholds, budgets, ratchets, and new-code gating. | Yes |
@@ -126,7 +125,8 @@ automatically). Linux, macOS, Windows, Git worktrees, and custom
 | Fix workflow | Preview and apply rule-provided fixes, then re-stage safely. | Yes |
 | Reports | Markdown, JSON schema 3, SARIF 2.1.0, self-contained HTML, JUnit, GitLab Code Quality, and Checkstyle. | Yes |
 | Local GUI | Loopback-only console for scans, policy, triage, fixes, pipelines, Git, rules, reports, and configuration. | Yes |
-| CI and hooks | Composite GitHub Action, native pre-commit/pre-push hooks, and pre-commit framework support. | Yes |
+| CI and hooks | Composite GitHub Action, GitLab MR summaries/inline suggestions, native pre-commit/pre-push hooks, and pre-commit framework support. | Yes |
+| Release artifacts | Wheel, sdist, single-file zipapp, signed checksums, build provenance, SBOM, and a container image. | Yes |
 | Rule QA | Schema validation, regex compilation, positive/negative corpus tests, and rule inspection. | Yes |
 | Privacy | Zero telemetry, no source upload, local reports, and redaction across every output format. | Yes |
 
@@ -143,6 +143,12 @@ commit-guard scan --staged --gate --policy-profile balanced
 commit-guard scan --diff origin/main...HEAD
 commit-guard scan --history 50
 commit-guard scan --all
+
+# Determinant profiles and explicit file/rule selection
+commit-guard scan --list-profiles
+commit-guard scan --profile app-code
+commit-guard scan --profile python-security --include "src/**" --rule "cg-python-*"
+commit-guard scan --profile secrets-only --exclude "tests/fixtures/**"
 
 # Dependencies and reports
 commit-guard scan --sca
@@ -267,9 +273,10 @@ commit-guard gui --port 0
 commit-guard gui --report-only --report-path out/report.html
 ```
 
-The console includes overview, scan controls, policy gate, triage, pipelines,
-fix preview/apply, report PRs, baseline management, Git operations, rule
-inspection, reports, maintenance, and a validated config editor.
+The console includes overview, scan controls, determinant profile/file/rule
+selection, policy gate, triage, pipelines, fix preview/apply, report PRs,
+baseline management, Git operations, rule inspection, an in-app profiles
+guide, reports, maintenance, and a validated config editor.
 
 Security defaults: binds to `127.0.0.1`, requires a per-run token, validates the
 `Host` header, caps request bodies, keeps secrets redacted, and runs pipelines
@@ -344,8 +351,9 @@ commit-guard scan --staged --no-cache   # debugging or read-only environments
 
 - Native detection is intentionally high-signal and reviewable; it is not a
   claim of complete semantic coverage.
-- Python taint is intraprocedural. It does not follow values across modules or
-  model every sanitizer.
+- Python taint uses conservative cross-file function summaries. Ambiguous
+  helpers with the same name can increase false positives, and arbitrary
+  abstractions, aliases, and sanitizers are still not fully modelled.
 - Most Semgrep rules require AST support. CommitGuard executes regex-compatible
   rules and records AST-only rules as skipped rather than approximating them.
 - Offline SCA depends on the quality and freshness of your local OSV snapshot.
@@ -358,10 +366,14 @@ commit-guard scan --staged --no-cache   # debugging or read-only environments
 |---|---|
 | [Configuration](docs/CONFIGURATION.md) | Every setting, default, profile, and precedence rule. |
 | [Policy](docs/POLICY.md) | Gates, budgets, ratchets, triage, and exit codes. |
-| [Rules](docs/RULES.md) | Native schema, rule packs, context windows, and validation. |
+| [Rules](docs/RULES.md) | Native schema, rule packs, context windows, selection, and validation. |
+| [Scan profiles](docs/SCAN_PROFILES.md) | Determinant file/rule selections in `rules/scan_profiles.yaml`, CLI/GUI usage, and PyPI packaging. |
 | [Interoperability](docs/INTEROP.md) | SARIF/native ingestion and report merging. |
 | [Ecosystem](docs/ECOSYSTEM.md) | SBOM, licenses, dashboard, watch, LSP, compliance, and plugins. |
 | [CI](docs/CI.md) | GitHub Actions, GitLab, Jenkins, and pre-commit. |
+| [GitLab](docs/GITLAB.md) | MR summaries, inline suggestions, and signed offline snapshots. |
+| [Benchmarks](docs/BENCHMARKS.md) | Benchmark card, fixed-commit accuracy corpus, and limitations. |
+| [Releasing](docs/RELEASING.md) | Signed artifacts, offline verification, zipapp, and container image. |
 | [Architecture](docs/ARCHITECTURE.md) | Scan flow, modules, caching, and tradeoffs. |
 | [Threat Model](docs/THREAT_MODEL.md) | Assets, adversaries, controls, and abuse cases. |
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | Hooks, paths, caches, and false positives. |

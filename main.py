@@ -96,6 +96,15 @@ try:
         get_staged_diff,
         is_inside_git_repo,
     )
+    from core.gitlab_mr import (
+        GitLabAPIError,
+        GitLabClient,
+        build_gitlab_inline_suggestions,
+        build_gitlab_summary,
+        gitlab_options_from_environment,
+        publish_gitlab_inline_suggestions,
+        publish_gitlab_summary,
+    )
     from core.pr_creator import (
         GitHubAPIError,
         GitHubClient,
@@ -123,6 +132,16 @@ try:
         load_ruleset,
     )
     from core.sca import scan_dependencies
+    from core.scan_profiles import (
+        PROFILE_FILENAME,
+        PathSelection,
+        ProfileError,
+        filter_ruleset,
+        load_scan_profiles,
+        merge_selection,
+        resolve_profile,
+        selected_ast_rule_ids,
+    )
     from core.scanner import (
         Baseline,
         annotate_baseline,
@@ -155,7 +174,12 @@ except ImportError as exc:  # missing PyYAML or a corrupted install
     )
     raise SystemExit(2) from exc
 
-DEFAULT_RULES_DIR = _PROJECT_ROOT / "rules"
+_ENV_RULES_DIR = os.environ.get("COMMITGUARD_RULES_DIR")
+DEFAULT_RULES_DIR = (
+    Path(_ENV_RULES_DIR).expanduser()
+    if _ENV_RULES_DIR
+    else _PROJECT_ROOT / "rules"
+)
 BASELINE_FILENAME = ".commit_guard_ignore"
 
 
@@ -217,6 +241,7 @@ def _write_reports(
     show_secrets: bool,
     truncated: bool,
     dependency_graph: str | None = None,
+    selection: dict[str, object] | None = None,
 ) -> list[Path]:
     written: list[Path] = []
     if "markdown" in targets:
@@ -228,6 +253,7 @@ def _write_reports(
                 show_secrets=show_secrets,
                 truncated=truncated,
                 dependency_graph=dependency_graph,
+                selection=selection,
             )
         )
     if "json" in targets:
@@ -238,6 +264,7 @@ def _write_reports(
                 threshold,
                 show_secrets=show_secrets,
                 truncated=truncated,
+                selection=selection,
             )
         )
     if "sarif" in targets:
@@ -434,6 +461,79 @@ def _maybe_review_pr(findings: list, rules: tuple) -> int:
     return 0
 
 
+def _effective_platform(platform: str | None) -> str:
+    """Selects GitHub or GitLab for PR/MR publishing."""
+    if platform and platform != "auto":
+        return platform
+    if (
+        os.environ.get("GITLAB_CI", "").lower() == "true"
+        or os.environ.get("CI_MERGE_REQUEST_IID")
+    ):
+        return "gitlab"
+    return "github"
+
+
+def _maybe_create_gitlab_summary(
+    findings: list,
+    dependency_markdown: str | None,
+    threshold: str,
+) -> int:
+    """Publishes a GitLab MR summary note and returns 0 or 2."""
+    try:
+        options = gitlab_options_from_environment()
+        if not options.token:
+            raise GitLabAPIError(
+                "GITLAB_TOKEN or CI_JOB_TOKEN is required for GitLab MR publishing."
+            )
+        client = GitLabClient(options.token, base_url=options.base_url)
+        body = build_gitlab_summary(
+            findings,
+            block_threshold=threshold,
+            dependency_graph=dependency_markdown,
+        )
+        result = publish_gitlab_summary(client, options, body)
+    except GitLabAPIError as exc:
+        print(
+            f"[commit-guard] ERROR: could not publish GitLab MR summary: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+    for warning in result.warnings:
+        print(f"[commit-guard] WARNING: {warning}", file=sys.stderr)
+    action = "Created" if result.posted else "Updated"
+    print(f"[commit-guard] {action} GitLab MR summary note.")
+    return 0
+
+
+def _maybe_review_gitlab(findings: list, rules: tuple) -> int:
+    """Posts inline suggestions on a GitLab MR and returns 0 or 2."""
+    try:
+        options = gitlab_options_from_environment()
+        if not options.token:
+            raise GitLabAPIError(
+                "GITLAB_TOKEN or CI_JOB_TOKEN is required for GitLab MR publishing."
+            )
+        client = GitLabClient(options.token, base_url=options.base_url)
+        suggestions = build_gitlab_inline_suggestions(findings, rules)
+        result = publish_gitlab_inline_suggestions(client, options, suggestions)
+    except GitLabAPIError as exc:
+        print(
+            f"[commit-guard] ERROR: could not post GitLab inline suggestions: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+    for warning in result.warnings:
+        print(f"[commit-guard] WARNING: {warning}", file=sys.stderr)
+    if result.posted:
+        print(
+            f"[commit-guard] Posted {result.posted} inline suggestion(s) "
+            "on the GitLab merge request."
+        )
+    else:
+        print("[commit-guard] No auto-fixable GitLab inline suggestions.")
+    return 0
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="commit-guard-scan",
@@ -446,6 +546,23 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="Path to the target git repository (default: current directory).")
     parser.add_argument("--rules-dir", type=Path, default=None,
                         help=f"Rules directory (default: {DEFAULT_RULES_DIR}).")
+    parser.add_argument("--profile", metavar="NAME", default=None,
+                        help=f"Determinant scan profile from <rules>/{PROFILE_FILENAME}.")
+    parser.add_argument("--profiles-file", type=Path, default=None,
+                        help=f"Explicit scan profile file (default: <rules>/{PROFILE_FILENAME}).")
+    parser.add_argument("--include", action="append", default=[], metavar="GLOB",
+                        help="Only scan matching files/directories (repeatable).")
+    parser.add_argument("--exclude", action="append", default=[], metavar="GLOB",
+                        help="Skip matching files/directories (repeatable).")
+    parser.add_argument("--rule", action="append", default=[], metavar="ID_GLOB",
+                        help="Only load matching rule ids (repeatable).")
+    parser.add_argument("--skip-rule", action="append", default=[], metavar="ID_GLOB",
+                        help="Skip matching rule ids (repeatable).")
+    parser.add_argument("--rule-source", action="append", default=[], metavar="SOURCE",
+                        help="Only load rules from this source (repeatable).")
+    parser.add_argument("--rule-severity", action="append", default=[], metavar="SEV",
+                        choices=VALID_THRESHOLDS,
+                        help="Only load rules at this severity (repeatable).")
     parser.add_argument("--config", type=Path, default=None,
                         help=f"Config file (default: <repo>/{CONFIG_FILENAME}).")
     parser.add_argument("--no-config", action="store_true",
@@ -457,6 +574,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--threshold", choices=VALID_THRESHOLDS, default=None,
                         help="Minimum severity that blocks the commit (default: high).")
     scan_modes = parser.add_mutually_exclusive_group()
+    scan_modes.add_argument("--staged", action="store_true",
+                        help="Scan staged changes (overrides a profile mode).")
     scan_modes.add_argument("--diff", metavar="REV",
                         help="Scan a revision range instead of staged changes, e.g. origin/main...HEAD.")
     scan_modes.add_argument("--history", type=int, metavar="N", default=None,
@@ -501,6 +620,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="Offline OSV JSON snapshot (default: <repo>/.commit_guard_osv.json).")
     parser.add_argument("--sca-timeout", type=int, metavar="SECONDS", default=None,
                         help="Timeout for OSV.dev requests (default: 20).")
+    parser.add_argument("--sca-require-signature", action="store_true",
+                        help=("Require a matching HMAC signature for offline OSV snapshots "
+                              "(key: COMMITGUARD_OSV_SIGNING_KEY)."))
     fix_group = parser.add_mutually_exclusive_group()
     fix_group.add_argument("--fix", action="store_true", dest="fix", default=None,
                         help="Apply safe rule auto-fixes and re-stage modified files.")
@@ -515,7 +637,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pr-title", metavar="TITLE", default=None,
                         help="Title for the generated pull request.")
     parser.add_argument("--review-pr", action="store_true",
-                        help="Post inline auto-fix suggestions on the originating pull request.")
+                        help="Post inline auto-fix suggestions on the originating pull/merge request.")
+    parser.add_argument("--platform", choices=("auto", "github", "gitlab"), default="auto",
+                        help="PR/MR platform for --create-pr/--review-pr (default: auto-detect).")
     parser.add_argument("--gate", action="store_true", dest="use_policy",
                         help="Evaluate policy v1 after scanning (threshold, budgets, ratchet).")
     parser.add_argument("--policy", type=Path, default=None,
@@ -542,6 +666,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="With --init-config, overwrite an existing config file.")
     parser.add_argument("--list-rules", action="store_true",
                         help="Print loaded rule IDs grouped by source and exit.")
+    parser.add_argument("--list-profiles", action="store_true",
+                        help="Print available determinant scan profiles and exit.")
     parser.add_argument("--check-rules", action="store_true",
                         help="Validate rule schema and positive/negative corpus samples and exit.")
     parser.add_argument("--corpus", type=Path, default=None,
@@ -580,6 +706,49 @@ def _list_rules(rules_dir: Path, verbose: bool, use_cache: bool) -> int:
     print(f"\nTotal active rules: {len(ruleset.rules) + len(TAINT_RULES)}")
     if ruleset.skipped:
         print(f"Skipped entries: {len(ruleset.skipped)} (use --verbose-rules for details)")
+    return 0
+
+
+def _resolve_profiles_file(
+    repo_root: Path,
+    rules_dir: Path,
+    explicit: Path | None,
+    config: Config,
+) -> Path:
+    path = explicit or config.profiles_file
+    if path is None:
+        return rules_dir / PROFILE_FILENAME
+    path = path.expanduser()
+    return path if path.is_absolute() else (repo_root / path).resolve()
+
+
+def _list_profiles(
+    rules_dir: Path, profiles_file: Path, *, explicit: bool = True
+) -> int:
+    try:
+        profiles = load_scan_profiles(
+            rules_dir, profiles_file if explicit else None
+        )
+    except ProfileError as exc:
+        print(f"[commit-guard] ERROR: {exc}", file=sys.stderr)
+        return 2
+    if not profiles:
+        print(f"[commit-guard] No scan profiles found at {profiles_file}.")
+        return 0
+    print(f"Determinant profiles ({profiles_file}):")
+    for name in sorted(profiles):
+        profile = profiles[name]
+        print(f"  {name}")
+        if profile.description:
+            print(f"    {profile.description}")
+        print(
+            "    mode="
+            f"{profile.mode} include={len(profile.include)} "
+            f"exclude={len(profile.exclude)} "
+            f"sources={len(profile.rule_sources)} "
+            f"include_rules={len(profile.include_rules)} "
+            f"exclude_rules={len(profile.exclude_rules)}"
+        )
     return 0
 
 
@@ -648,6 +817,15 @@ def run_scan(
     history: int | None = None,
     scan_all: bool = False,
     pre_push: bool = False,
+    staged: bool = False,
+    profile: str | None = None,
+    profiles_file: Path | None = None,
+    include: tuple[str, ...] | list[str] = (),
+    exclude: tuple[str, ...] | list[str] = (),
+    rule_include: tuple[str, ...] | list[str] = (),
+    rule_exclude: tuple[str, ...] | list[str] = (),
+    rule_sources: tuple[str, ...] | list[str] = (),
+    rule_severities: tuple[str, ...] | list[str] = (),
     baseline_path: Path | None = None,
     github_annotations: bool = False,
     soft_fail: bool | None = None,
@@ -665,6 +843,7 @@ def run_scan(
     sca_online: bool | None = None,
     sca_snapshot: Path | None = None,
     sca_timeout: int | None = None,
+    sca_require_signature: bool = False,
     fix: bool | None = None,
     fix_dry_run: bool | None = None,
     use_policy: bool = False,
@@ -675,6 +854,7 @@ def run_scan(
     pr_branch: str | None = None,
     pr_title: str | None = None,
     review_pr: bool = False,
+    platform: str | None = None,
 ) -> int:
     """Executes a full scan cycle. Returns the process exit code."""
     started = time.perf_counter()
@@ -753,6 +933,35 @@ def run_scan(
     effective_soft_fail = bool(config.soft_fail)
 
     resolved_rules_dir = _resolve_rules_dir(target_repo, rules_dir, config)
+    profiles_file_explicit = profiles_file is not None or config.profiles_file is not None
+    resolved_profiles_file = _resolve_profiles_file(
+        target_repo, resolved_rules_dir, profiles_file, config
+    )
+    try:
+        profiles = load_scan_profiles(
+            resolved_rules_dir,
+            resolved_profiles_file if profiles_file_explicit else None,
+        )
+        selected_profile = resolve_profile(profiles, profile or config.profile)
+    except ProfileError as exc:
+        print(f"[commit-guard] ERROR: {exc}", file=sys.stderr)
+        return 2
+    selection = merge_selection(
+        selected_profile,
+        include=include or (() if selected_profile is not None else config.include),
+        exclude=exclude,
+        rule_sources=rule_sources,
+        include_rules=rule_include,
+        exclude_rules=rule_exclude,
+        rule_severities=rule_severities,
+    )
+    effective_excludes = config.exclude + selection.exclude
+    explicit_scan_mode = bool(diff_revision or history is not None or scan_all or pre_push or staged)
+    if selected_profile is not None and not explicit_scan_mode:
+        if selected_profile.mode == "repo":
+            scan_all = True
+        elif selected_profile.mode == "staged":
+            staged = True
     effective_report_path = config.report_path
     if effective_report_path is not None and not effective_report_path.is_absolute():
         effective_report_path = (target_repo / effective_report_path).resolve()
@@ -783,6 +992,7 @@ def run_scan(
         staged_scan = False
         scan_all = True
 
+    path_selection = PathSelection(selection.include, effective_excludes)
     try:
         if pre_push:
             stdin_text = "" if sys.stdin.isatty() else sys.stdin.read()
@@ -800,11 +1010,18 @@ def run_scan(
                 target_repo, "HEAD", max_commits=history
             )
         elif scan_all:
-            diff_lines = get_all_files(target_repo)
+            diff_lines = get_all_files(
+                target_repo,
+                include=selection.include,
+                exclude=effective_excludes,
+            )
         elif diff_revision:
             diff_lines = get_diff(target_repo, diff_revision)
         else:
             diff_lines = get_staged_diff(repo_dir=target_repo)
+        diff_lines = [
+            line for line in diff_lines if path_selection.matches(line.file_path)
+        ]
         changed_paths = sorted({line.file_path for line in diff_lines})
         ignored_files = set()
         if config.ignore_inline:
@@ -834,6 +1051,34 @@ def run_scan(
         return 2
 
     ruleset = apply_severity_overrides(ruleset, config.severity_overrides)
+    ruleset = filter_ruleset(ruleset, selection.rules)
+    ast_rule_ids = selected_ast_rule_ids(selection.rules)
+    if pre_push:
+        scan_mode = "pre-push"
+    elif history is not None:
+        scan_mode = "history"
+    elif scan_all:
+        scan_mode = "repo"
+    elif diff_revision:
+        scan_mode = "diff"
+    else:
+        scan_mode = "staged"
+    active_rule_count = len(ruleset.rules) + (
+        len(ast_rule_ids) if ast_rule_ids is not None else len(TAINT_RULES)
+    )
+    selection_info: dict[str, object] = {
+        "profile": selected_profile.name if selected_profile else None,
+        "mode": scan_mode,
+        "paths": {
+            "include": list(selection.include),
+            "exclude": list(effective_excludes),
+            "files": len(changed_paths),
+        },
+        "rules": {
+            **selection.rules.to_dict(),
+            "active": active_rule_count,
+        },
+    }
 
     if audit_suppressions:
         python_paths = [
@@ -859,10 +1104,12 @@ def run_scan(
             rules=tuple(ruleset.rules),
             line_allowlist=ruleset.line_allowlist,
             path_allowlist=ruleset.path_allowlist,
-            path_excludes=config.exclude,
+            path_excludes=effective_excludes,
+            path_includes=selection.include,
             ignore_inline=config.ignore_inline,
             ignored_files=frozenset(ignored_files),
             ignored_rule_ids=frozenset(),
+            enabled_rule_ids=ast_rule_ids,
             filter_placeholders=config.filter_placeholders,
             file_lines=audit_file_lines,
             severity_overrides=dict(config.severity_overrides),
@@ -914,6 +1161,7 @@ def run_scan(
                 show_secrets=effective_show_secrets,
                 truncated=False,
                 dependency_graph=dependency_markdown,
+                selection=selection_info,
             )
             written.extend(
                 _write_html_outputs(
@@ -1009,10 +1257,12 @@ def run_scan(
         rules=tuple(ruleset.rules),
         line_allowlist=ruleset.line_allowlist,
         path_allowlist=ruleset.path_allowlist,
-        path_excludes=config.exclude,
+        path_excludes=effective_excludes,
+        path_includes=selection.include,
         ignore_inline=config.ignore_inline,
         ignored_files=frozenset(ignored_files),
         ignored_rule_ids=frozenset(ignored_rule_ids),
+        enabled_rule_ids=ast_rule_ids,
         filter_placeholders=config.filter_placeholders,
         max_findings=scan_limit,
         file_lines=file_lines,
@@ -1046,6 +1296,7 @@ def run_scan(
             online=config.sca_online,
             snapshot_path=sca_snapshot_path,
             timeout=config.sca_timeout,
+            require_snapshot_signature=sca_require_signature,
         )
         findings.extend(sca_result.to_findings())
         if not quiet:
@@ -1206,6 +1457,7 @@ def run_scan(
             show_secrets=effective_show_secrets,
             truncated=truncated,
             dependency_graph=dependency_markdown,
+            selection=selection_info,
         )
         written.extend(
             _write_html_outputs(
@@ -1266,21 +1518,30 @@ def run_scan(
             findings, effective_threshold, show_secrets=effective_show_secrets
         )
 
+    selected_platform = _effective_platform(platform)
     if create_pr:
-        pr_code = _maybe_create_pr(
-            findings,
-            dependency_markdown,
-            effective_threshold,
-            base=pr_base,
-            branch=pr_branch,
-            title=pr_title,
-            report_dir=config.report_dir,
-        )
+        if selected_platform == "gitlab":
+            pr_code = _maybe_create_gitlab_summary(
+                findings, dependency_markdown, effective_threshold
+            )
+        else:
+            pr_code = _maybe_create_pr(
+                findings,
+                dependency_markdown,
+                effective_threshold,
+                base=pr_base,
+                branch=pr_branch,
+                title=pr_title,
+                report_dir=config.report_dir,
+            )
         if pr_code:
             return pr_code
 
     if review_pr:
-        review_code = _maybe_review_pr(findings, ruleset.rules)
+        if selected_platform == "gitlab":
+            review_code = _maybe_review_gitlab(findings, ruleset.rules)
+        else:
+            review_code = _maybe_review_pr(findings, ruleset.rules)
         if review_code:
             return review_code
 
@@ -1303,7 +1564,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         return _init_config(target_repo, force=args.force)
 
-    if args.list_rules or args.check_rules or args.explain:
+    if args.list_rules or args.list_profiles or args.check_rules or args.explain:
         resolved_config_path = args.config
         if resolved_config_path is not None:
             resolved_config_path = resolved_config_path.expanduser()
@@ -1319,6 +1580,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[commit-guard] ERROR: {exc}", file=sys.stderr)
             return 2
         rules_dir = _resolve_rules_dir(target_repo, args.rules_dir, config)
+        if args.list_profiles:
+            profiles_file = _resolve_profiles_file(
+                target_repo, rules_dir, args.profiles_file, config
+            )
+            return _list_profiles(
+                rules_dir,
+                profiles_file,
+                explicit=args.profiles_file is not None or config.profiles_file is not None,
+            )
         if args.check_rules:
             corpus = args.corpus
             if corpus is not None and not corpus.is_absolute():
@@ -1345,6 +1615,15 @@ def main(argv: list[str] | None = None) -> int:
         history=args.history,
         scan_all=args.all,
         pre_push=args.pre_push,
+        staged=args.staged,
+        profile=args.profile,
+        profiles_file=args.profiles_file,
+        include=args.include,
+        exclude=args.exclude,
+        rule_include=args.rule,
+        rule_exclude=args.skip_rule,
+        rule_sources=args.rule_source,
+        rule_severities=args.rule_severity,
         baseline_path=args.baseline,
         github_annotations=args.github_annotations,
         soft_fail=(True if args.soft_fail else None),
@@ -1362,6 +1641,7 @@ def main(argv: list[str] | None = None) -> int:
         sca_online=args.sca_online,
         sca_snapshot=args.sca_snapshot,
         sca_timeout=args.sca_timeout,
+        sca_require_signature=args.sca_require_signature,
         fix=args.fix,
         fix_dry_run=args.fix_dry_run,
         create_pr=args.create_pr,
@@ -1369,6 +1649,7 @@ def main(argv: list[str] | None = None) -> int:
         pr_branch=args.pr_branch,
         pr_title=args.pr_title,
         review_pr=args.review_pr,
+        platform=args.platform,
         use_policy=bool(args.use_policy),
         policy_path=args.policy,
         policy_profile=args.policy_profile,
