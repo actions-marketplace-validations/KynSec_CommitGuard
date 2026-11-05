@@ -95,6 +95,7 @@ release tag or commit SHA for production use.
 | PyPI | `pipx install commit-guard` | After the first release |
 | pip | `python -m pip install "git+https://github.com/CommitGuard-Sec/CommitGuard.git"` | Existing virtual environments |
 | Source | `git clone https://github.com/CommitGuard-Sec/CommitGuard.git` | Development and review |
+| VS Code | [Install extension](https://marketplace.visualstudio.com/items?itemName=AmrKhaledEldhshan.commitguard-kynsec) (`ext install AmrKhaledEldhshan.commitguard-kynsec`) | Live diagnostics and rule-database scan panel |
 | pre-commit | `commit-guard install . --no-hook` | Framework-managed hooks |
 | GitHub Action | `uses: CommitGuard-Sec/CommitGuard@<tag-or-sha>` | CI enforcement |
 | Docker | `docker build -t commitguard . && docker run --rm -v "$PWD:/workspace" commitguard scan --staged` | Isolated or CI runs |
@@ -104,6 +105,17 @@ release tag or commit SHA for production use.
 Requirements: **Python 3.11+**, **git**, and **PyYAML 6+** (installed
 automatically). Linux, macOS, Windows, Git worktrees, and custom
 `core.hooksPath` are supported.
+
+### VS Code extension
+
+Install [CommitGuard Security Scanner (KynSec)](https://marketplace.visualstudio.com/items?itemName=AmrKhaledEldhshan.commitguard-kynsec)
+from the Marketplace, or build the VSIX from `editors/vscode/`. The extension
+starts the local language server for live diagnostics and adds an Activity Bar
+panel that scans any combination of rule databases (`custom`, `gitleaks`,
+`nuclei`, `devskim`, `semgrep`, `semgrep:semgrep_python`, `python_ast`,
+`javascript_ast`), scans the whole repository or the staged diff, opens findings
+at the reported line, and launches `commit-guard gui` in an integrated terminal.
+It runs only in trusted workspaces.
 
 ## Feature Matrix
 
@@ -117,7 +129,7 @@ automatically). Linux, macOS, Windows, Git worktrees, and custom
 | Analyzer interop | Normalize and merge SARIF or native output from Semgrep, CodeQL, Trivy, Grype, Checkov, Bandit, and gitleaks. | Yes |
 | SBOM and licenses | CycloneDX 1.6, SPDX 2.3, and an allow/deny/review license policy with separate exit status. | Yes |
 | Compliance | Control mapping packs for OWASP Top 10, CWE Top 25, ASVS 5.0, PCI DSS 4.0, and SOC 2 technical evidence, with explicit caveats. | Yes |
-| Editor and watch loops | Stdio LSP diagnostics/code actions, a VS Code extension skeleton, and `watch --once` incremental snapshots. | Yes |
+| Editor and watch loops | Stdio LSP diagnostics/code actions, a VS Code extension, and `watch --once` incremental snapshots. | Yes |
 | Dashboard | Self-contained HTML/JSON with severity, category, owner, trend, and report provenance. | Yes |
 | Plugins | Signed manifests, out-of-process execution, capability limits, timeouts, and output caps. | Yes |
 | Policy engine | `strict`, `balanced`, and `audit` profiles; thresholds, budgets, ratchets, and new-code gating. | Yes |

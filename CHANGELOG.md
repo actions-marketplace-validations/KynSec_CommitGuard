@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.1.1 - 2026-11-04
+
+### Fixed
+
+- Restored provenance validation after the DevSkim crypto rule hardening by
+  recording the updated checksum and documenting the local word-boundary change.
+
 ## 3.1.0 - 2026-11-03
 
 ### Added
@@ -20,6 +27,26 @@
   activation.
 
 ## Unreleased
+
+### Added
+
+- VS Code extension 0.2.0 Activity Bar scan panel: choose any combination of
+  rule databases, scan the whole repository or staged changes, review findings,
+  jump to source lines, and launch `commit-guard gui` from an integrated
+  terminal.
+- The project site, README, ecosystem guide, release guide, and troubleshooting
+  docs now cover the extension, its Marketplace listing, and the scan panel.
+
+### Fixed
+
+- VS Code extension 0.1.2 auto-detects a workspace wrapper, a configured or
+  detected Python interpreter (`python -m install_hook`), and `PATH`, with an
+  actionable error listing every checked command. Workspace-local launchers are
+  only used in trusted workspaces, and Windows `.cmd` launchers are quoted
+  safely.
+- `commit-guard lsp` now accepts the `--stdio` flag that
+  `vscode-languageclient` appends, so the VS Code extension can start the
+  language server.
 
 ### Added
 
